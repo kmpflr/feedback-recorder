@@ -20,8 +20,8 @@ The app records and transcribes locally. **Using the optional AI skill can send 
 macOS 26 or later, Xcode Command Line Tools, and Python 3 for the optional skill. No coding agent is needed to record or read the output.
 
 ```sh
-git clone https://github.com/kmpflr/feedback-recorder-public.git
-cd feedback-recorder-public
+git clone https://github.com/kmpflr/feedback-recorder.git
+cd feedback-recorder
 scripts/make-cert.sh       # once: create a local signing identity
 scripts/install-app.sh     # build, sign, install and launch
 ```

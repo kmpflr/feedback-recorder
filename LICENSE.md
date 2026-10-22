@@ -1,4 +1,4 @@
-Required Notice: Copyright 2026 kmpflr (https://github.com/kmpflr/feedback-recorder-public)
+Required Notice: Copyright 2026 kmpflr (https://github.com/kmpflr/feedback-recorder)
 
 Commercial use is not granted by these terms. To ask about a commercial licence,
 open an issue on the repository above.
