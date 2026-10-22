@@ -1,0 +1,6 @@
+# Vocabulary examples — replace these with phrases from your own project.
+# One phrase per line, at most 100. Shared with on-device transcription and the optional skill.
+Acme
+Workbench
+catalogue
+workspace

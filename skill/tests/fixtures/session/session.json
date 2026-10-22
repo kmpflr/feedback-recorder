@@ -1,0 +1,28 @@
+{
+  "appVersion": "1.0.0",
+  "counts": {
+    "segments": 5,
+    "shots": 1
+  },
+  "durationSeconds": 3800,
+  "engine": {
+    "locale": "en-US",
+    "module": "SpeechTranscriber",
+    "name": "apple-speech"
+  },
+  "input": {
+    "name": "Demo microphone",
+    "uid": "synthetic-fixture"
+  },
+  "mode": "call",
+  "startedAt": "2026-01-01T10:00:00Z",
+  "state": "stopped",
+  "stopReason": "user",
+  "stoppedAt": "2026-01-01T11:03:20Z",
+  "systemAudio": true,
+  "version": 1,
+  "heard": [
+    "me",
+    "them"
+  ]
+}
