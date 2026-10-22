@@ -15,9 +15,16 @@ public enum SessionRecovery {
         return touched.sorted { $0.path < $1.path }
     }
 
-    /// Newest by folder name (names sort chronologically).
+    /// Metadata retains sub-minute ordering even when folder suffixes reach _10 or a clock changes.
     public static func newestSession(root: URL, fileManager: FileManager = .default) -> SessionFolder? {
-        sessionFolders(root: root, fileManager: fileManager).max { $0.url.lastPathComponent < $1.url.lastPathComponent }
+        sessionFolders(root: root, fileManager: fileManager).compactMap { folder -> (SessionFolder, Date)? in
+            guard let data = try? Data(contentsOf: folder.stateURL),
+                  let state = try? SessionState.decoder.decode(SessionState.self, from: data) else { return nil }
+            return (folder, state.startedAt)
+        }.max {
+            if $0.1 != $1.1 { return $0.1 < $1.1 }
+            return $0.0.url.lastPathComponent.compare($1.0.url.lastPathComponent, options: .numeric) == .orderedAscending
+        }?.0
     }
 
     private static func sessionFolders(root: URL, fileManager: FileManager) -> [SessionFolder] {

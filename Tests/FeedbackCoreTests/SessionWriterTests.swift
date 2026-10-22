@@ -56,3 +56,23 @@ private func makeWriter(debounce: Duration = .zero) throws -> (SessionWriter, Se
     let state = try SessionState.decoder.decode(SessionState.self, from: Data(contentsOf: folder.stateURL))
     #expect(state.state == .stopped && state.stopReason == .user && state.durationSeconds == 90)
 }
+
+@Test func continuousEventsStillReachDiskBeforeTheStreamStops() async throws {
+    let (writer, folder) = try makeWriter(debounce: .milliseconds(100))
+    defer { try? FileManager.default.removeItem(at: folder.url.deletingLastPathComponent()) }
+    try await writer.start()
+    let producer = Task {
+        for n in 0..<150 {
+            if Task.isCancelled { break }
+            await writer.append(.note(NoteEvent(time: Double(n), text: "Continuous event")))
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+    let flushed = await waitUntil(.seconds(1)) {
+        (try? String(contentsOf: folder.transcriptURL, encoding: .utf8))?.contains("Continuous event") == true
+    }
+    producer.cancel()
+    await producer.value
+    try await writer.stop(reason: .user, at: Date())
+    #expect(flushed)
+}

@@ -51,11 +51,17 @@ final class AudioTrackWriter: TrackWriting, @unchecked Sendable {
             self.urls = [:]
             return urls
         }
+        var firstError: Error?
         for (_, wav) in pending {
-            let m4a = wav.deletingPathExtension().appendingPathExtension("m4a")
-            try Self.transcode(wav: wav, to: m4a)
-            try FileManager.default.removeItem(at: wav)
+            do {
+                let m4a = wav.deletingPathExtension().appendingPathExtension("m4a")
+                try Self.transcode(wav: wav, to: m4a)
+                try FileManager.default.removeItem(at: wav)
+            } catch {
+                if firstError == nil { firstError = error }
+            }
         }
+        if let firstError { throw firstError }
     }
 
     private func withLock<T>(_ body: () -> T) -> T {

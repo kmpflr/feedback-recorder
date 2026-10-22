@@ -12,7 +12,7 @@ Run against the installed build with a **synthetic conversation**, unrelated pri
 
 ## Recording and recovery
 
-1. On first launch, check the microphone, system-audio and notification prompts. Verify the chosen input appears in the menu.
+1. On first launch, check the microphone, system-audio and notification prompts. Try starting before setup finishes; the app must ask you to wait. Verify the chosen input appears in the menu.
 2. Start a two-track session. Speak a synthetic sentence, play synthetic speech through the Mac and copy a harmless image. Stop and verify both tracks play, timestamps increase, the image link resolves, and `session.json` reports the actual heard channels.
 3. Turn system audio off. Record a room-mode sentence; verify `Room` labels and one microphone track.
 4. Switch inputs mid-recording and reconnect a microphone. Check the session folder and clock remain the same and device-change notes match what happened.
@@ -20,7 +20,7 @@ Run against the installed build with a **synthetic conversation**, unrelated pri
 6. Test a heard side falling silent, speech without transcription, device disconnection and wake from sleep. Check the orange state and warning text; use the known-issues document to distinguish detection from automatic recovery.
 7. Enable and disable level meters. Confirm microphone/system-audio bars move independently and that the icon remains legible.
 8. Test silence auto-stop. Check its fixed noise threshold against the microphone in use; it may not trigger on every device.
-9. Quit normally during a synthetic session and verify finalization. Separately, force-quit a disposable synthetic session, relaunch and check crash recovery and retained WAVs.
+9. Quit normally during startup and during a synthetic session and verify finalization. Run the build/install script during a disposable session with a custom session root; it must let the app finalize and quit before replacing the bundle. Separately, force-quit a disposable synthetic session, relaunch and check crash recovery and retained WAVs.
 10. With optional local gap-recovery dependencies installed, verify recovery annotations; without them, verify an explanatory note and preservation of existing audio/transcript.
 
 ## Agent handoff
@@ -29,4 +29,4 @@ Run against the installed build with a **synthetic conversation**, unrelated pri
 2. Choose Codex in **Feedback agent**. Copy a command and stop a synthetic recording; both clipboard results must start with `$feedback`.
 3. Choose Claude Code and repeat; both must start with `/feedback`. Restart and confirm the selection persists.
 4. In each agent, run the synthetic fixture command from [the demo](demo.md). Confirm the disabled Save request, ambiguous sort-order question and export-column request are identified. Answer “none”; verify no project code changes.
-5. Repeat after appending synthetic transcript content. Check only the new material is listed and prior items remain recorded.
+5. Repeat after appending synthetic transcript content, extending a line at an existing timestamp, and inserting an earlier recovered turn. Check that new or revised material is identified without duplicating completed items.

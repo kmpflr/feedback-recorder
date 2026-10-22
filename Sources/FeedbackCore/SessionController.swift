@@ -4,7 +4,7 @@ import AVFAudio
 public enum SessionError: Error { case alreadyRecording }
 
 public actor SessionController {
-    public enum State: Sendable, Equatable { case idle, recording(SessionFolder), stopping }
+    public enum State: Sendable, Equatable { case idle, starting, recording(SessionFolder), stopping }
 
     public private(set) var state: State = .idle
     public private(set) var lastFolder: SessionFolder?
@@ -47,6 +47,8 @@ public actor SessionController {
     /// Set the moment anything is written to the transcript as an error note, so `stop` can record
     /// `stopReason: error` for a session that kept recording through a failure. Cleared by `start`.
     private var sawError = false
+    private var failedTracks: Set<Channel> = []
+    private var storageFailed = false
     private var activeChannels: [Channel] = []
     /// Session seconds of the newest buffer seen on each channel, and the channels whose gap has
     /// already been noted. Together they make the starvation note fire once per silence.
@@ -90,86 +92,111 @@ public actor SessionController {
 
     public func start(config: SessionConfig) async throws -> SessionFolder {
         guard state == .idle else { throw SessionError.alreadyRecording }
-        sawError = false
-        lastBufferTime = [:]
-        starvedChannels = []
-        lastSegmentEnd = [:]
-        channelsInDropout = []
-        gaps = []
-        let startedAt = now()
-        let folder = try SessionFolder.create(root: config.root, startedAt: startedAt, timeZone: config.timeZone)
-        let header = SessionHeader.make(startedAt: startedAt, mode: config.mode, inputName: config.input.name, timeZone: config.timeZone)
-        let sessionState = SessionState(startedAt: startedAt, mode: config.mode, input: config.input,
-                                        systemAudio: config.mode == .call, engine: config.engineInfo, appVersion: config.appVersion)
-        let writer = SessionWriter(folder: folder, header: header, state: sessionState)
-        try await writer.start()
-        if let vocabURL = config.vocabularyFileURL, FileManager.default.fileExists(atPath: vocabURL.path) {
-            try? FileManager.default.copyItem(at: vocabURL, to: folder.vocabURL)
-        }
-        self.writer = writer
-
-        let channels = config.mode.channels
-        activeChannels = channels
-        let initialClock = ChannelClock(sessionStartHostTime: hostNow(), secondsPerHostTick: secondsPerHostTick)
-        self.clock = initialClock
-        watchdog = SilenceWatchdog(channels: channels, period: config.silencePeriod, startTime: 0)
-        rateMonitor = CaptureRateMonitor()
-        health = ChannelHealth(channels: channels, asymmetryPeriod: config.asymmetryPeriod)
-        reportedHeard = []
-        meterPeak = [:]
-
-        let format = await engine.preferredFormat()
-        let segments = try await engine.start(channels: channels, vocabulary: config.vocabulary)
-        try trackWriter.start(channels: channels, format: format, folder: folder)
-
-        state = .recording(folder)
-
-        for channel in channels {
-            guard let source = sources[channel] else { continue }
-            let stream = try await source.start()
-            pumps.append(Task { [weak self] in
-                for await chunk in stream {
-                    guard let self else { return }
-                    await self.handle(chunk, targetFormat: format)
-                }
+        state = .starting
+        do {
+            sawError = false
+            failedTracks = []
+            storageFailed = false
+            lastBufferTime = [:]
+            starvedChannels = []
+            lastSegmentEnd = [:]
+            channelsInDropout = []
+            gaps = []
+            let startedAt = now()
+            let folder = try SessionFolder.create(root: config.root, startedAt: startedAt, timeZone: config.timeZone)
+            let header = SessionHeader.make(startedAt: startedAt, mode: config.mode, inputName: config.input.name, timeZone: config.timeZone)
+            let sessionState = SessionState(startedAt: startedAt, mode: config.mode, input: config.input,
+                                            systemAudio: config.mode == .call, engine: config.engineInfo, appVersion: config.appVersion)
+            let writer = SessionWriter(folder: folder, header: header, state: sessionState, onError: { [weak self] message in
+                Task { await self?.persistenceFailed(message) }
             })
-        }
-        segmentTask = Task { [weak self] in
-            for await segment in segments {
-                guard let self else { return }
-                await self.record(segment)
+            self.writer = writer
+            try await writer.start()
+            if let vocabURL = config.vocabularyFileURL, FileManager.default.fileExists(atPath: vocabURL.path) {
+                try? FileManager.default.copyItem(at: vocabURL, to: folder.vocabURL)
             }
-        }
-        let sessionTime: @Sendable () -> TimeInterval = { [hostNow] in initialClock.sessionTime(hostTime: hostNow()) }
-        let shots = shotSource.start(folder: folder, sessionTime: sessionTime)
-        shotTask = Task { [weak self] in
-            for await shot in shots {
-                guard let self else { return }
-                await self.writer?.append(.shot(shot))
+
+            let channels = config.mode.channels
+            activeChannels = channels
+            let initialClock = ChannelClock(sessionStartHostTime: hostNow(), secondsPerHostTick: secondsPerHostTick)
+            self.clock = initialClock
+            watchdog = SilenceWatchdog(channels: channels, period: config.silencePeriod, startTime: 0)
+            rateMonitor = CaptureRateMonitor()
+            health = ChannelHealth(channels: channels, asymmetryPeriod: config.asymmetryPeriod)
+            reportedHeard = []
+            meterPeak = [:]
+
+            let format = await engine.preferredFormat()
+            let segments = try await engine.start(channels: channels, vocabulary: config.vocabulary)
+            try trackWriter.start(channels: channels, format: format, folder: folder)
+
+            var streams: [(Channel, AsyncStream<AudioChunk>)] = []
+            for channel in channels {
+                guard let source = sources[channel] else { continue }
+                streams.append((channel, try await source.start()))
             }
-        }
-        tickerTask = Task { [weak self, interval = tickInterval] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
-                guard let self else { return }
-                await self.tick(startedAt: startedAt)
+            if storageFailed { throw CocoaError(.fileWriteUnknown) }
+            state = .recording(folder)
+            for (_, stream) in streams {
+                pumps.append(Task { [weak self] in
+                    for await chunk in stream {
+                        guard let self else { return }
+                        await self.handle(chunk, targetFormat: format)
+                    }
+                })
             }
-        }
-        meterTask = Task { [weak self, interval = meterInterval] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
-                guard let self else { return }
-                await self.publishLevels()
+            segmentTask = Task { [weak self] in
+                for await segment in segments {
+                    guard let self else { return }
+                    await self.record(segment)
+                }
             }
+            let sessionTime: @Sendable () -> TimeInterval = { [hostNow] in initialClock.sessionTime(hostTime: hostNow()) }
+            let shots = shotSource.start(folder: folder, sessionTime: sessionTime)
+            shotTask = Task { [weak self] in
+                for await shot in shots {
+                    guard let self else { return }
+                    await self.writer?.append(.shot(shot))
+                }
+            }
+            tickerTask = Task { [weak self, interval = tickInterval] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: interval)
+                    guard let self else { return }
+                    await self.tick(startedAt: startedAt)
+                }
+            }
+            meterTask = Task { [weak self, interval = meterInterval] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: interval)
+                    guard let self else { return }
+                    await self.publishLevels()
+                }
+            }
+            // The starting state — nobody heard yet, nothing wrong — is what the menu bar shows until
+            // the first side speaks, so it is reported before any buffer can.
+            onHealth?([], health.snapshot)
+            return folder
+        } catch {
+            // Startup owns rollback even when the caller never reaches a recording state.
+            state = .stopping
+            for source in sources.values { await source.stop() }
+            _ = await withinTimeout(segmentDrainTimeout) { try? await self.engine.finish() }
+            try? await trackWriter.finish()
+            if let writer {
+                try? await writer.stop(reason: .error, at: now())
+                lastFolder = writer.folder
+            }
+            writer = nil; clock = nil; watchdog = nil
+            state = .idle
+            throw error
         }
-        // The starting state — nobody heard yet, nothing wrong — is what the menu bar shows until
-        // the first side speaks, so it is reported before any buffer can.
-        onHealth?([], health.snapshot)
-        return folder
     }
 
     public func stop(reason: StopReason) async {
         guard case .recording(let folder) = state else { return }
+        let stoppedAt = now()
+        let stoppedAtSeconds = elapsed()
         state = .stopping
         for source in sources.values { await source.stop() }
         pumps.forEach { $0.cancel() }
@@ -182,8 +209,8 @@ public actor SessionController {
         for (channel, converter) in converters {
             if let tail = try? converter.flush(), tail.frameLength > 0 {
                 let tailChunk = AudioChunk(channel: channel, buffer: tail, hostTime: hostNow())
+                await writeAudio(tailChunk)
                 await engine.feed(tailChunk)
-                try? trackWriter.write(tailChunk)
             }
         }
         converters = [:]
@@ -206,12 +233,16 @@ public actor SessionController {
         }
         segmentTask = nil
         do { try await trackWriter.finish() } catch { await noteError("audio file error: \(error.localizedDescription)") }
-        await recoverDroppedSpeech(folder: folder, endingAt: elapsed())
+        await recoverDroppedSpeech(folder: folder, endingAt: stoppedAtSeconds)
         // An error anywhere in the session outranks the reason the stop was requested for: the
         // recording is still there, but the transcript is incomplete, and `session.json` is what
         // tells the /feedback skill and the next reader that. A clean run keeps `.user`/`.silence`.
-        let outcome: StopReason = sawError ? .error : reason
-        try? await writer?.stop(reason: outcome, at: now())
+        var outcome: StopReason = sawError ? .error : reason
+        do { try await writer?.stop(reason: outcome, at: stoppedAt) }
+        catch {
+            outcome = .error
+            onNote?("Session files could not be saved: \(error.localizedDescription)")
+        }
         writer = nil; watchdog = nil
         lastFolder = folder
         state = .idle
@@ -247,7 +278,7 @@ public actor SessionController {
         if let converter = converters[channel] {
             if let tail = try? converter.flush(), tail.frameLength > 0 {
                 let tailChunk = AudioChunk(channel: channel, buffer: tail, hostTime: hostNow())
-                try? trackWriter.write(tailChunk)
+                await writeAudio(tailChunk)
                 await engine.feed(tailChunk)
             }
             converters[channel] = nil
@@ -266,6 +297,26 @@ public actor SessionController {
     }
 
     // MARK: private
+
+    private func persistenceFailed(_ message: String) async {
+        guard writer != nil, !storageFailed else { return }
+        storageFailed = true
+        sawError = true
+        onNote?("Session files could not be saved: \(message)")
+        await stop(reason: .error)
+    }
+
+    private func writeAudio(_ chunk: AudioChunk) async {
+        do { try trackWriter.write(chunk) }
+        catch {
+            guard failedTracks.insert(chunk.channel).inserted else { return }
+            let message = "Audio could not be saved on \(chunk.channel.label): \(error.localizedDescription)"
+            await noteError(message)
+            onNote?(message)
+            // A pump cannot await a stop which joins that same pump.
+            Task { await self.stop(reason: .error) }
+        }
+    }
 
     private func elapsed() -> TimeInterval { clock?.sessionTime(hostTime: hostNow()) ?? 0 }
 
@@ -330,7 +381,7 @@ public actor SessionController {
         if let existing = converters[chunk.channel], existing.inputFormat != chunk.buffer.format {
             if let tail = try? existing.flush(), tail.frameLength > 0 {
                 let tailChunk = AudioChunk(channel: chunk.channel, buffer: tail, hostTime: chunk.hostTime)
-                try? trackWriter.write(tailChunk)
+                await writeAudio(tailChunk)
                 await engine.feed(tailChunk)
             }
             converters[chunk.channel] = nil
@@ -350,7 +401,7 @@ public actor SessionController {
         // SpeechAnalyzer consumes fed buffers on its own worker thread with no promise that the
         // caller's copy stays valid afterward, so reading it back after `feed` races that
         // consumption (this is what crashed the shipped app on 2026-09-03).
-        try? trackWriter.write(out)
+        await writeAudio(out)
         let level = AudioLevel.rmsDBFS(converted)
         if onLevels != nil { meterPeak[chunk.channel] = max(meterPeak[chunk.channel] ?? level, level) }
         // A capture that is wrong about its hardware's rate still looks healthy from here:

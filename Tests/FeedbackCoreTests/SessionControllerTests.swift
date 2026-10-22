@@ -855,3 +855,130 @@ private func sessionWithOneDropout(_ backfill: FakeBackfill) async throws -> (St
     await controller.stop(reason: .user)
     #expect(backfill.asked.isEmpty)
 }
+
+private final class FailingStartTracks: TrackWriting, @unchecked Sendable {
+    var finished = false
+    func start(channels: [Channel], format: AVAudioFormat, folder: SessionFolder) throws { throw DeviceUnavailable() }
+    func write(_ chunk: AudioChunk) throws {}
+    func finish() async throws { finished = true }
+}
+
+private final class FailingWriteTracks: TrackWriting, @unchecked Sendable {
+    func start(channels: [Channel], format: AVAudioFormat, folder: SessionFolder) throws {}
+    func write(_ chunk: AudioChunk) throws { throw DeviceUnavailable() }
+    func finish() async throws {}
+}
+
+private final class FailingSource: AudioSource, @unchecked Sendable {
+    var stopped = false
+    func start() async throws -> AsyncStream<AudioChunk> { throw DeviceUnavailable() }
+    func stop() async { stopped = true }
+}
+
+@Test func failedTrackStartupRollsBackEngineAndSessionFiles() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("fr-start-fail-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let engine = FakeEngine(), tracks = FailingStartTracks()
+    let controller = SessionController(sources: [:], engine: engine, trackWriter: tracks, shotSource: FakeShots())
+    await #expect(throws: DeviceUnavailable.self) { try await controller.start(config: config(root: root)) }
+    #expect(await controller.state == .idle)
+    #expect(engine.finished && tracks.finished)
+    let folder = try #require(await controller.lastFolder)
+    let saved = try SessionState.decoder.decode(SessionState.self, from: Data(contentsOf: folder.stateURL))
+    #expect(saved.state == .stopped && saved.stopReason == .error)
+}
+
+@Test func failedSecondSourceStopsTheFirstWithoutCallerCleanup() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("fr-source-fail-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mic = FakeSource([]), system = FailingSource(), engine = FakeEngine(), tracks = FakeTracks()
+    let controller = SessionController(sources: [.me: mic, .them: system], engine: engine,
+                                       trackWriter: tracks, shotSource: FakeShots())
+    await #expect(throws: DeviceUnavailable.self) { try await controller.start(config: config(root: root)) }
+    #expect(mic.stopped && system.stopped && engine.finished && tracks.finished)
+    #expect(await controller.state == .idle)
+}
+
+private actor PausedStartEngine: TranscriptionEngine {
+    private var ready: CheckedContinuation<Void, Never>?
+    func preferredFormat() async -> AVAudioFormat {
+        await withCheckedContinuation { ready = $0 }
+        return AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+    }
+    var waiting: Bool { ready != nil }
+    func release() { ready?.resume(); ready = nil }
+    func start(channels: [Channel], vocabulary: [String]) async throws -> AsyncStream<TranscriptSegment> {
+        AsyncStream { $0.finish() }
+    }
+    func feed(_ chunk: AudioChunk) async {}
+    func finish() async throws {}
+}
+
+@Test func concurrentStartCannotCreateASecondSession() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("fr-concurrent-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let engine = PausedStartEngine()
+    let controller = SessionController(sources: [:], engine: engine, trackWriter: FakeTracks(), shotSource: FakeShots())
+    let first = Task { try await controller.start(config: config(root: root)) }
+    await waitUntil { await engine.waiting }
+    #expect(await controller.state == .starting)
+    await #expect(throws: SessionError.self) { try await controller.start(config: config(root: root)) }
+    await engine.release()
+    _ = try await first.value
+    await controller.stop(reason: .user)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 1)
+}
+
+@Test func audioWriteFailureStopsAndMarksSessionAsError() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("fr-write-fail-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = PushSource()
+    let controller = SessionController(sources: [.me: source], engine: FakeEngine(),
+                                       trackWriter: FailingWriteTracks(), shotSource: FakeShots())
+    let folder = try await controller.start(config: config(root: root))
+    source.continuation?.yield(chunk(.me, hostTime: mach_absolute_time(), level: 0.2))
+    #expect(await waitUntil { await controller.state == .idle })
+    let saved = try SessionState.decoder.decode(SessionState.self, from: Data(contentsOf: folder.stateURL))
+    #expect(saved.stopReason == .error)
+    #expect(try String(contentsOf: folder.transcriptURL, encoding: .utf8).contains("Audio could not be saved"))
+}
+
+@Test func metadataWriteFailureStopsSession() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("fr-metadata-fail-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let controller = SessionController(sources: [:], engine: FakeEngine(), trackWriter: FakeTracks(), shotSource: FakeShots())
+    let folder = try await controller.start(config: config(root: root))
+    // A directory in place of the metadata file produces a real, deterministic filesystem error.
+    try FileManager.default.removeItem(at: folder.stateURL)
+    try FileManager.default.createDirectory(at: folder.stateURL, withIntermediateDirectories: false)
+    await controller.addNote("Force a flush.")
+    #expect(await waitUntil { await controller.state == .idle })
+}
+
+private final class FinalizationClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date = Date(timeIntervalSince1970: 1000)
+    var now: Date { lock.withLock { date } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { date.addTimeInterval(seconds) } }
+}
+
+private struct DelayedFinalizationTracks: TrackWriting {
+    let clock: FinalizationClock
+    func start(channels: [Channel], format: AVAudioFormat, folder: SessionFolder) throws {}
+    func write(_ chunk: AudioChunk) throws {}
+    func finish() async throws { clock.advance(600) }
+}
+
+@Test func recordingDurationExcludesSlowFinalization() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("fr-duration-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let clock = FinalizationClock()
+    let controller = SessionController(sources: [:], engine: FakeEngine(),
+        trackWriter: DelayedFinalizationTracks(clock: clock), shotSource: FakeShots(), now: { clock.now })
+    let folder = try await controller.start(config: config(root: root))
+    clock.advance(30)
+    await controller.stop(reason: .user)
+    let saved = try SessionState.decoder.decode(SessionState.self, from: Data(contentsOf: folder.stateURL))
+    #expect(saved.durationSeconds == 30)
+    #expect(saved.stoppedAt == Date(timeIntervalSince1970: 1030))
+}

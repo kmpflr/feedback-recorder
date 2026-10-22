@@ -8,10 +8,12 @@ public actor SessionWriter {
     private var events: [TranscriptEvent] = []
     private var micCarriedTheCall = false
     private let debounce: Duration
+    private let onError: @Sendable (String) -> Void
     private var flushTask: Task<Void, Never>?
 
-    public init(folder: SessionFolder, header: SessionHeader, state: SessionState, debounce: Duration = .milliseconds(500)) {
-        self.folder = folder; self.header = header; self.state = state; self.debounce = debounce
+    public init(folder: SessionFolder, header: SessionHeader, state: SessionState, debounce: Duration = .milliseconds(500),
+                onError: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.folder = folder; self.header = header; self.state = state; self.debounce = debounce; self.onError = onError
     }
 
     public func start() throws { try flush() }
@@ -60,13 +62,20 @@ public actor SessionWriter {
         try SessionState.encoder.encode(state).write(to: folder.stateURL, options: .atomic)
     }
 
+    private func flushScheduled() {
+        flushTask = nil
+        do { try flush() }
+        catch { onError(error.localizedDescription) }
+    }
+
     private func scheduleFlush() {
-        flushTask?.cancel()
+        // Continuous events must not postpone every write indefinitely.
+        guard flushTask == nil else { return }
         let delay = debounce
         flushTask = Task { [weak self] in
             if delay > .zero { try? await Task.sleep(for: delay) }
             guard !Task.isCancelled, let self else { return }
-            try? await self.flush()
+            await self.flushScheduled()
         }
     }
 }

@@ -63,31 +63,13 @@ final class WhisperBackfill: TranscriptBackfilling, @unchecked Sendable {
     // MARK: the subprocess
 
     private func run(cli: String, model: String, wav: URL, outputStem: URL) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: cli)
-        process.arguments = ["-m", model, "-f", wav.path, "-l", locale, "-oj", "-of", outputStem.path, "-np", "-nt"]
-        let errors = Pipe()
-        process.standardError = errors
-        process.standardOutput = FileHandle.nullDevice
-        try process.run()
-
-        // `waitUntilExit` blocks its thread, so it is not something to await on a cooperative pool.
-        // The termination handler resumes the continuation instead, and a separate sleep terminates
-        // a run that overshoots — a wedged subprocess must not keep the app from finishing a stop.
-        let limit = timeout
-        let timer = Task {
-            try? await Task.sleep(for: limit)
-            if !Task.isCancelled, process.isRunning { process.terminate() }
-        }
-        defer { timer.cancel() }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            process.terminationHandler = { _ in continuation.resume() }
-        }
-
-        guard process.terminationStatus == 0 else {
-            if process.terminationReason == .uncaughtSignal { throw WhisperError.timedOut(limit) }
-            let stderr = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            throw WhisperError.failed(process.terminationStatus, String(stderr.suffix(300)))
+        let result = try await LocalProcess.run(
+            executable: URL(fileURLWithPath: cli),
+            arguments: ["-m", model, "-f", wav.path, "-l", locale, "-oj", "-of", outputStem.path, "-np", "-nt"],
+            timeout: timeout)
+        if result.timedOut { throw WhisperError.timedOut(timeout) }
+        guard result.status == 0 else {
+            throw WhisperError.failed(result.status, String(result.stderr.suffix(300)))
         }
     }
 

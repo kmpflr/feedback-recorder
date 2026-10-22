@@ -25,7 +25,7 @@ Microphone and system audio remain separate capture channels. This avoids requir
 
 ## State and persistence
 
-`SessionController` owns capture state and bounded shutdown of transcription. `SessionWriter` owns transcript and metadata rewrites, with debounce and atomic replacement. WAV tracks remain available after an interruption; a clean stop converts them to AAC. Recovery marks abandoned sessions as crashed rather than claiming successful completion.
+`SessionController` owns capture state and bounded shutdown of transcription. `SessionWriter` owns transcript and metadata rewrites, with writes scheduled 500 ms after the first pending event and atomic replacement. Save failures notify the user and stop capture. WAV tracks remain available after an interruption; a clean stop converts them to AAC. Recovery marks abandoned sessions as crashed rather than claiming successful completion.
 
 Channel health combines transcript evidence, speech-shaped audio, stream delivery and elapsed-time checks. It is heuristic: background noise, quiet microphones and unusual audio can fool it. The UI reports evidence and warnings rather than promising complete capture.
 

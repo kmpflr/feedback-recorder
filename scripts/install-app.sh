@@ -5,8 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 DEST="/Applications/Feedback Recorder.app"
 
-# build.sh checks the signing identity, refuses while a session is recording, and quits any
-# running instance. Skip its launch so the installed copy is the one that starts.
+# build.sh checks the signing identity and lets any running app finish its session and quit.
+# Skip its launch so the installed copy is the one that starts.
 FR_NO_LAUNCH=1 scripts/build.sh
 
 if [[ ! -w /Applications ]]; then

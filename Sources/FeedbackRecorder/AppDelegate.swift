@@ -8,8 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: SessionController!
     private var preflight: Preflight.Report?
     private var starting = false
-    /// Mirrors `controller.state == .recording` so `applicationShouldTerminate` — which cannot
-    /// await the actor — can decide synchronously. Set on a successful start, cleared in `didStop`.
+    /// Tracks a session from startup through finalization so synchronous termination and delayed
+    /// callbacks agree. Cleared on startup failure or in `didStop`.
     private var isRecording = false
     /// The folder of the session this delegate believes is live, so `didStop` can tell its own
     /// session's callback from a stale one. Set on a successful start, cleared in `didStop`.
@@ -58,9 +58,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `trackWriter.finish()` and `writer.stop()`. `didStop` is reached exactly once, by whichever
     /// stop is in flight, and only after the session is finalized, copied and announced.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard isRecording else { return .terminateNow }
+        guard isRecording || starting else { return .terminateNow }
         terminationPending = true
         status.setStopping()
+        if starting { return .terminateLater }
         Task {
             // A stale `isRecording` — only reachable if `didStop` never ran — would otherwise
             // leave AppKit waiting forever, since nothing is left to answer it.
@@ -100,9 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// second, so the identity check keeps a replaced session's last reports off the new icon.
     private func levelsHandler(for session: SessionController) -> (@Sendable ([Channel: Double]) -> Void)? {
         guard Settings.showLevelMeters else { return nil }
-        return { [weak self] levels in
+        return { [weak self, weak session] levels in
             Task { @MainActor in
-                guard let self, self.controller === session else { return }
+                guard let self, let session, self.controller === session else { return }
                 self.status.setLevels(levels)
             }
         }
@@ -115,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .recording:
                 status.setStopping()
                 await controller.stop(reason: .user)
-            case .stopping: break
+            case .starting, .stopping: break
             }
         }
     }
@@ -125,9 +126,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // before the controller reaches `.recording`. Two presses inside that window would each
         // build a fresh controller, orphaning the first with a live microphone and a session
         // folder nothing can stop. The flag is set before the first await, so it excludes.
-        guard !starting else { return }
+        guard !starting, !terminationPending else { return }
+        guard preflight != nil else {
+            Notifier.post(title: "Preparing Feedback Recorder", body: "Wait for permission checks and speech model setup to finish, then start again.")
+            return
+        }
         starting = true
-        defer { starting = false }
+        defer {
+            starting = false
+            if terminationPending && !isRecording {
+                terminationPending = false
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+        }
 
         // tccd resolves the process to its binary on disk before it grants the microphone or the
         // system audio tap. Once that binary is deleted (a worktree removed, the Trash emptied)
@@ -177,32 +188,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let session = SessionController(sources: sources, engine: engine, trackWriter: AudioTrackWriter(), shotSource: shots,
                                         backfill: WhisperBackfill(localeIdentifier: Settings.localeIdentifier))
         controller = session
-        await session.setOnStopped { [weak self] folder, reason in
-            Task { @MainActor in self?.didStop(folder: folder, reason: reason) }
+        await session.setOnStopped { [weak self, weak session] folder, reason in
+            Task { @MainActor in
+                guard let self, let session, self.controller === session else { return }
+                self.didStop(folder: folder, reason: reason)
+            }
         }
-        await session.setOnHealth { [weak self] changes, snapshot in
-            Task { @MainActor in self?.healthChanged(changes, snapshot, from: session) }
+        await session.setOnNote { message in
+            Notifier.post(title: "Feedback Recorder", body: message)
+        }
+        await session.setOnHealth { [weak self, weak session] changes, snapshot in
+            Task { @MainActor in
+                guard let session else { return }
+                self?.healthChanged(changes, snapshot, from: session)
+            }
         }
         await session.setOnLevels(levelsHandler(for: session))
         let config = SessionConfig(root: Settings.sessionRoot, mode: mode, input: input, locale: Settings.localeIdentifier,
                                    vocabulary: Vocabulary.load(from: Settings.vocabularyURL), vocabularyFileURL: Settings.vocabularyURL,
                                    silencePeriod: Settings.silencePeriod, asymmetryPeriod: Settings.asymmetryPeriod,
                                    engineInfo: engine.engineInfo, appVersion: Settings.appVersion)
+        isRecording = true
         do {
-            let folder = try await controller.start(config: config)
-            isRecording = true
+            let folder = try await session.start(config: config)
+            guard isRecording else { return }
             liveFolder = folder
-            if let fallbackNote { await controller.addNote(fallbackNote) }
+            if let fallbackNote { await session.addNote(fallbackNote) }
+            guard isRecording else { return }
             status.setRecording(inputName: input.name)
             Notifier.post(title: "Recording", body: "\(input.name) · system audio \(mode == .call ? "on" : "off")\(fallbackNote.map { " · " + $0 } ?? "")")
             observeShots(folder: folder)
+            if terminationPending {
+                status.setStopping()
+                await session.stop(reason: .user)
+            }
         } catch {
-            // `SessionController.start` reaches `.recording` before it starts the sources, and in
-            // call mode the microphone starts first. So a throw from `SystemAudioCapture.start()`
-            // leaves the mic engine running and pumping into a live writer. Stopping tears down
-            // every source, finalizes the writer and fires `didStop`'s `.error` arm; it is a no-op
-            // if the throw came before `.recording`.
-            await controller.stop(reason: .error)
+            isRecording = false
+            liveFolder = nil
+            status.setIdle()
             Notifier.post(title: "Could not start", body: error.localizedDescription)
         }
     }

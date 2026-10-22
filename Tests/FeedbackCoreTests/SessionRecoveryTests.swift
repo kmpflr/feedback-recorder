@@ -27,3 +27,14 @@ private func session(in root: URL, name: String, state: RecordingState, startedA
     #expect(d.stopReason == .user)
     #expect(SessionRecovery.newestSession(root: root)?.url == orphan.url)
 }
+
+@Test func latestSessionUsesMetadataAndNumericSuffixes() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("fr-latest-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let date = Date(timeIntervalSince1970: 1000)
+    _ = try session(in: root, name: "2026-01-01_1000_9", state: .stopped, startedAt: date)
+    let tenth = try session(in: root, name: "2026-01-01_1000_10", state: .stopped, startedAt: date)
+    #expect(SessionRecovery.newestSession(root: root) == tenth)
+    let renamed = try session(in: root, name: "a-reviewed-session", state: .stopped, startedAt: date.addingTimeInterval(10))
+    #expect(SessionRecovery.newestSession(root: root) == renamed)
+}
