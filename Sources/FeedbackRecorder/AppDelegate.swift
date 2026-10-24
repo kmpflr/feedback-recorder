@@ -5,6 +5,10 @@ import FeedbackCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var status: StatusItemController!
     private var hotkey: HotkeyController?
+    private var settingsWindow: SettingsWindowController?
+    private var recordingsWindow: RecordingsWindowController?
+    private var checkingAccess = false
+    private var capturingShortcut = false
     private var controller: SessionController!
     private var preflight: Preflight.Report?
     private var starting = false
@@ -24,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Settings.registerDefaults()
         Notifier.requestAuthorization()
         status = StatusItemController()
-        status.hotkeyLabel = HotkeyController.describe(keyCode: Settings.hotkeyKeyCode, modifiers: Settings.hotkeyModifiers)
+        status.hotkeyLabel = HotkeyController.describe(keyCode: Settings.hotkeyKeyCode, modifiers: Settings.hotkeyModifiers, displayKey: Settings.hotkeyDisplayKey)
         controller = SessionController(
             sources: [:],                                  // replaced per session in start()
             engine: AppleSpeechEngine(localeIdentifier: Settings.localeIdentifier),
@@ -35,12 +39,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hotkey = try HotkeyController(keyCode: Settings.hotkeyKeyCode, modifiers: Settings.hotkeyModifiers) { [weak self] in
                 Task { @MainActor in self?.toggle() }
             }
+            hotkey?.onDisabledPress = { [weak self] in
+                Task { @MainActor in self?.settingsWindow?.window?.makeFirstResponder(nil) }
+            }
         } catch {
             Notifier.post(title: "Hotkey unavailable", body: "Could not register \(status.hotkeyLabel): \(error.localizedDescription)")
         }
         Task {
             let report = await Preflight.run()
             preflight = report
+            settingsWindow?.model.accessReport = report
             if !report.recovered.isEmpty {
                 Notifier.post(title: "Recovered \(report.recovered.count) interrupted session(s)", body: report.recovered.map(\.lastPathComponent).joined(separator: ", "))
             }
@@ -86,15 +94,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.applyInputChoice(uid)
         }
         status.onToggleSystemAudio = { Settings.captureSystemAudio.toggle() }
-        status.onSilenceMinutes = { Settings.silenceMinutes = $0 }
-        status.onAsymmetryMinutes = { Settings.asymmetryMinutes = $0 }
-        status.onToggleLevelMeters = { [weak self] in
-            Settings.showLevelMeters.toggle()
-            guard let self else { return }
-            self.status.refreshIcon()
-            let session: SessionController = self.controller
-            Task { await session.setOnLevels(self.levelsHandler(for: session)) }
-        }
+        status.onRecordings = { [weak self] in self?.showRecordings() }
+        status.onSettings = { [weak self] in self?.showSettings() }
+    }
+
+    private func prepareSettingsWindow() {
+        guard settingsWindow == nil else { return }
+        let model = SettingsPanelModel(hotkeyLabel: status.hotkeyLabel, accessReport: preflight,
+            recordingActive: isRecording || starting,
+            onMetersChanged: { [weak self] in
+                guard let self else { return }
+                self.status.refreshIcon()
+                let session: SessionController = self.controller
+                Task { await session.setOnLevels(self.levelsHandler(for: session)) }
+            },
+            onCaptureShortcut: { [weak self] capturing in
+                self?.capturingShortcut = capturing
+                self?.hotkey?.isEnabled = !capturing
+            },
+            onShortcutChange: { [weak self] shortcut, key in
+                guard let self else { throw CocoaError(.userCancelled) }
+                if shortcut.keyCode != Settings.hotkeyKeyCode || shortcut.modifiers != Settings.hotkeyModifiers || self.hotkey == nil {
+                    // Register the replacement before releasing the old key. Failure preserves it.
+                    let replacement = try HotkeyController(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in
+                        Task { @MainActor in self?.toggle() }
+                    }
+                    replacement.onDisabledPress = { [weak self] in
+                        Task { @MainActor in self?.settingsWindow?.window?.makeFirstResponder(nil) }
+                    }
+                    replacement.isEnabled = !self.capturingShortcut
+                    self.hotkey = replacement
+                }
+                Settings.saveShortcut(shortcut, displayKey: key)
+                let label = HotkeyController.describe(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers, displayKey: key)
+                self.status.hotkeyLabel = label
+                return label
+            },
+            onCheckAccess: { [weak self] in
+                guard let self else { throw CocoaError(.userCancelled) }
+                guard self.preflight != nil, !self.isRecording, !self.starting, !self.checkingAccess else {
+                    throw NSError(domain: "RecordingAccess", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                        "Wait for setup and any recording to finish, then check again."])
+                }
+                self.checkingAccess = true
+                defer { self.checkingAccess = false }
+                let report = await Preflight.checkAccess()
+                self.preflight = report
+                return report
+            })
+        settingsWindow = SettingsWindowController(model: model)
+    }
+
+    private func showSettings() {
+        prepareSettingsWindow()
+        settingsWindow?.present()
+    }
+
+    private func showRecordings() {
+        prepareSettingsWindow()
+        if recordingsWindow == nil { recordingsWindow = RecordingsWindowController() }
+        recordingsWindow?.present()
     }
 
     /// The meter listener for `session`, or nil when meters are off. Levels arrive ten times a
@@ -127,13 +186,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // build a fresh controller, orphaning the first with a live microphone and a session
         // folder nothing can stop. The flag is set before the first await, so it excludes.
         guard !starting, !terminationPending else { return }
-        guard preflight != nil else {
+        guard preflight != nil, !checkingAccess else {
             Notifier.post(title: "Preparing Feedback Recorder", body: "Wait for permission checks and speech model setup to finish, then start again.")
             return
         }
         starting = true
+        settingsWindow?.model.recordingActive = true
         defer {
             starting = false
+            settingsWindow?.model.recordingActive = isRecording
             if terminationPending && !isRecording {
                 terminationPending = false
                 NSApp.reply(toApplicationShouldTerminate: true)
@@ -218,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             status.setRecording(inputName: input.name)
             Notifier.post(title: "Recording", body: "\(input.name) · system audio \(mode == .call ? "on" : "off")\(fallbackNote.map { " · " + $0 } ?? "")")
             observeShots(folder: folder)
+            recordingsWindow?.refreshIfVisible()
             if terminationPending {
                 status.setStopping()
                 await session.stop(reason: .user)
@@ -304,17 +366,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard liveFolder == nil || liveFolder == folder else { return }
         liveFolder = nil
         isRecording = false
+        settingsWindow?.model.recordingActive = false
+        recordingsWindow?.refreshIfVisible()
         shotPoller?.cancel(); shotPoller = nil
         status.setIdle()
-        copy(folder.feedbackCommand(for: Settings.feedbackAgent))
+        if Settings.copyCommandOnStop { copy(folder.feedbackCommand(for: Settings.feedbackAgent)) }
         let why: String = switch reason {
         case .user: "Stopped"
-        case .silence: "Stopped after \(Settings.silenceMinutes) minutes of silence"
+        case .silence: "Stopped after prolonged silence"
         // `.crash` is written by `SessionRecovery` at the next launch, which reports through
         // Preflight's own notification and never reaches a stop callback.
         case .error, .crash: "Stopped after an error"
         }
-        Notifier.post(title: why, body: "\(Settings.feedbackAgent.displayName) feedback command copied · \(folder.url.lastPathComponent)")
+        let detail = Settings.copyCommandOnStop
+            ? "\(Settings.feedbackAgent.displayName) feedback command copied"
+            : (reason == .error ? "Check the session for incomplete output" : "Recording saved")
+        Notifier.post(title: why, body: "\(detail) · \(folder.url.lastPathComponent)")
         if terminationPending {
             terminationPending = false
             NSApp.reply(toApplicationShouldTerminate: true)

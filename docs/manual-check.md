@@ -30,3 +30,20 @@ Run against the installed build with a **synthetic conversation**, unrelated pri
 3. Choose Claude Code and repeat; both must start with `/feedback`. Restart and confirm the selection persists.
 4. In each agent, run the synthetic fixture command from [the demo](demo.md). Confirm the disabled Save request, ambiguous sort-order question and export-column request are identified. Answer “none”; verify no project code changes.
 5. Repeat after appending synthetic transcript content, extending a line at an existing timestamp, and inserting an earlier recovered turn. Check that new or revised material is identified without duplicating completed items.
+
+## Settings
+
+1. Open Settings from the menu bar. Close with Command-W, reopen, and check that it is the same window. Check light/dark appearance and keyboard navigation between General, Recording and Access.
+2. Choose a disposable writable folder; start a synthetic session and confirm it is saved there. Choose another folder during the session: the active session must remain in its original location, and the next must use the new folder.
+3. Cancel the folder picker; the saved location must stay unchanged. Try an unavailable or unwritable destination and check that the error is explained without changing the preference. Use Open Folder and Use Default.
+4. Change recording defaults during a session and confirm they apply only to the next session. Change level meters and confirm the menu icon updates immediately. Switch the agent from either the menu or Settings and confirm both reflect it.
+5. Disable automatic copying, place harmless text on the clipboard, then stop a synthetic recording. The text must remain and the notification must not claim a command was copied. Manual Copy feedback command must still work.
+6. Restart the app and verify that folder, agent, copying, meters and recording defaults persist. Check Command-C on the displayed folder path and Command-V in the folder chooser.
+
+## Recent recordings, access and shortcut editing
+
+1. Create several synthetic sessions in two different recording locations. Open Recent recordings and verify both locations appear, newest first. Search by name, date, call/room mode and microphone; try a search with no results. Refresh after creating a session.
+2. Rename a session, restart the app and confirm the name persists. Its folder, transcript, media and previously copied feedback command must keep the same paths. Open the selected folder and copy its command. Try an invalid or blank name and an unavailable disk.
+3. In Settings → Access, verify the displayed microphone/notification state and cached system-audio/speech check result. Check Again while idle; correct a denied permission in macOS Settings, recheck and verify starting works without relaunching. Confirm checks are disabled during recording and no active or stopped session metadata is rewritten by a recheck.
+4. Click the shortcut control. Test a valid new combination, an unmodified typing key, Escape, the current shortcut and an unavailable combination. Valid changes take effect immediately; rejection or cancellation keeps the previous key working. Losing window focus or changing sections must end capture. Reset restores the default. Restart to verify persistence.
+5. Confirm the global recording shortcut does not start/stop a session while its editor is listening. Verify the shortened Copy feedback command label with either agent selected.

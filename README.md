@@ -56,7 +56,7 @@ scripts/install-skill.sh both
 | Codex | `~/.agents/skills/feedback/` | `$feedback /absolute/path/to/session` |
 | Claude Code | `~/.claude/skills/feedback/` | `/feedback /absolute/path/to/session` |
 
-Choose **Feedback agent → Codex / Claude Code** in the app menu. **Copy feedback command** and the automatic copy after stopping use that selection. Existing installations default to Claude Code. Codex uses `$feedback`; `/feedback` is a separate built-in Codex command and should not be used to invoke this skill.
+Choose **Feedback agent → Codex / Claude Code** in the app menu. **Copy feedback command** and the optional automatic copy after stopping use that selection. Turn automatic copying off in Settings to preserve your clipboard. Existing installations default to Claude Code. Codex uses `$feedback`; `/feedback` is a separate built-in Codex command and should not be used to invoke this skill.
 
 Both agents use the same `SKILL.md` and helper. Open the agent in the project you want to change, with access to the local session folder. The skill lists requests with timestamps and screenshots, marks unclear requests as questions, and implements the items you select. It records what it covered in `feedback-items.md`, so you can run it mid-call and again later. If a newly installed skill does not appear, restart the agent.
 
@@ -109,6 +109,16 @@ Without those dependencies, a note explains that gap recovery was unavailable an
 
 ## Settings
 
+Open **Settings…** from the menu bar for a native preferences window:
+
+- **General:** choose and open the recordings folder, select your feedback agent, control automatic clipboard copying, show or hide level meters, and change the global recording shortcut.
+- **Recording:** choose whether to include system audio, set silence auto-stop and one-sided warnings, and edit recognition vocabulary.
+- **Access:** see microphone, system-audio, speech-asset and notification status. Use **Check Again** while idle to recheck setup, or open Privacy Settings. This may prompt for access or download speech assets; it does not run session recovery.
+
+The folder picker verifies write access before saving your choice. A changed location applies to new sessions; existing recordings stay where they are. Recording defaults also apply to the next session. Changes save automatically, and the microphone remains available in the menu bar's **Input** menu for live switching.
+
+<img src="docs/images/settings.png" width="560" alt="Settings window with recordings folder, feedback agent, clipboard and menu-bar preferences">
+
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | Input | System default | Microphone to capture |
@@ -117,11 +127,16 @@ Without those dependencies, a note explains that gap recovery was unavailable an
 | Level meters | On | Show per-channel input levels |
 | Silence auto-stop | 10 minutes | Stop after prolonged silence |
 | One-sided silence warning | 3 minutes | Warn about a missing or silent side of a call |
-| Session root | `~/FeedbackSessions` | Folder where sessions are saved |
+| Recordings folder | `~/FeedbackSessions` | Folder where new sessions are saved |
+| Copy command on stop | On | Replace the clipboard with the selected agent’s feedback command |
 
 Vocabulary is stored at `~/Library/Application Support/FeedbackRecorder/vocab.txt`, up to 100 phrases, one per line. The on-device recognizer receives contextual strings; the skill also uses the session's vocabulary copy to resolve clear mis-hearings. Neither guarantees correct transcription. The shipped vocabulary contains synthetic examples to replace.
 
-The hotkey can be changed with `hotkeyKeyCode` and `hotkeyModifiers` defaults under `local.feedback-recorder`, then restarting the app.
+In Settings → General, click the displayed shortcut and press Command or Control with at least one other modifier and a key. Escape cancels; Reset restores ⌃⌥⌘R. A successful change takes effect immediately and persists across launches. If macOS rejects a combination, the previous shortcut remains active.
+
+**Recent recordings…** in the menu bar opens a searchable list ordered newest first. Search session names, dates, call/room mode or microphone names, then open a folder, copy its feedback command or rename the session. Names are stored in `session-label.json`; paths stay stable. The list reads metadata only, and includes recording locations previously selected in this version of the app. It does not scan transcript text or audio.
+
+<img src="docs/images/recordings.png" width="700" alt="Recent recordings window showing synthetic sessions with search, open, copy command and rename actions">
 
 ## Develop
 

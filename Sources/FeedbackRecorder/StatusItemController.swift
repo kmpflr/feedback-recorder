@@ -37,9 +37,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     var onOpenSession: (() -> Void)?
     var onChooseInput: ((String?) -> Void)?           // nil = follow system default
     var onToggleSystemAudio: (() -> Void)?
-    var onSilenceMinutes: ((Int) -> Void)?
-    var onAsymmetryMinutes: ((Int) -> Void)?
-    var onToggleLevelMeters: (() -> Void)?
+    var onSettings: (() -> Void)?
+    var onRecordings: (() -> Void)?
     var hotkeyLabel = ""
 
     override init() {
@@ -309,9 +308,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         toggle.toolTip = hotkeyLabel
         menu.addItem(toggle)
         menu.addItem(.separator())
-        menu.addItem(action("Copy feedback command for \(Settings.feedbackAgent.displayName)", #selector(copyCommand(_:))))
+        menu.addItem(action("Copy feedback command", #selector(copyCommand(_:))))
         menu.addItem(action("Open current session", #selector(openSession(_:))))
-        menu.addItem(action("Sessions folder…", #selector(openRoot(_:))))
+        menu.addItem(action("Recent recordings…", #selector(showRecordings(_:))))
+        menu.addItem(action("Open recordings folder", #selector(openRoot(_:))))
         let agents = NSMenu()
         for agent in FeedbackAgent.allCases {
             let option = NSMenuItem(title: agent.displayName, action: #selector(chooseFeedbackAgent(_:)), keyEquivalent: "")
@@ -345,36 +345,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         sys.target = self; sys.state = Settings.captureSystemAudio ? .on : .off
         sys.isEnabled = !recording
         menu.addItem(sys)
-        let meters = NSMenuItem(title: "Level meters", action: #selector(toggleLevelMeters(_:)), keyEquivalent: "")
-        meters.target = self; meters.state = Settings.showLevelMeters ? .on : .off
-        meters.toolTip = "Two bars beside the icon while recording: Me (blue) and Them (teal), each read above that side's own noise floor."
-        menu.addItem(meters)
         menu.addItem(.separator())
-
-        let settings = NSMenu()
-        let silence = NSMenu()
-        for minutes in [5, 10, 20, 0] {
-            let mi = NSMenuItem(title: minutes == 0 ? "Off" : "\(minutes) min", action: #selector(chooseSilence(_:)), keyEquivalent: "")
-            mi.target = self; mi.representedObject = minutes
-            mi.state = Settings.silenceMinutes == minutes ? .on : .off
-            silence.addItem(mi)
-        }
-        let silenceItem = NSMenuItem(title: "Silence auto-stop", action: nil, keyEquivalent: ""); silenceItem.submenu = silence
-        settings.addItem(silenceItem)
-        let asymmetry = NSMenu()
-        for minutes in [2, 3, 5, 0] {
-            let mi = NSMenuItem(title: minutes == 0 ? "Off" : "\(minutes) min", action: #selector(chooseAsymmetry(_:)), keyEquivalent: "")
-            mi.target = self; mi.representedObject = minutes
-            mi.state = Settings.asymmetryMinutes == minutes ? .on : .off
-            asymmetry.addItem(mi)
-        }
-        let asymmetryItem = NSMenuItem(title: "One-sided silence warning", action: nil, keyEquivalent: ""); asymmetryItem.submenu = asymmetry
-        settings.addItem(asymmetryItem)
-        settings.addItem(action("Edit vocabulary…", #selector(editVocabulary(_:))))
-        settings.addItem(action("Session root…", #selector(chooseRoot(_:))))
-        let hk = NSMenuItem(title: "Hotkey: \(hotkeyLabel)", action: nil, keyEquivalent: ""); hk.isEnabled = false
-        settings.addItem(hk)
-        let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: ""); settingsItem.submenu = settings
+        let settingsItem = action("Settings…", #selector(showSettings(_:)))
+        settingsItem.keyEquivalent = ","
         menu.addItem(settingsItem)
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
@@ -390,17 +363,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         Settings.feedbackAgent = agent
     }
     @objc private func openSession(_ sender: Any?) { onOpenSession?() }
-    @objc private func openRoot(_ sender: Any?) { NSWorkspace.shared.open(Settings.sessionRoot) }
+    @objc private func openRoot(_ sender: Any?) {
+        do {
+            try SessionStorage.prepare(Settings.sessionRoot)
+            NSWorkspace.shared.open(Settings.sessionRoot)
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "Couldn’t open the recordings folder"
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
+    }
     @objc private func chooseInput(_ sender: NSMenuItem) { onChooseInput?(sender.representedObject as? String) }
     @objc private func toggleSystemAudio(_ sender: Any?) { onToggleSystemAudio?() }
-    @objc private func toggleLevelMeters(_ sender: Any?) { onToggleLevelMeters?() }
-    @objc private func chooseSilence(_ sender: NSMenuItem) { onSilenceMinutes?(sender.representedObject as? Int ?? 10) }
-    @objc private func chooseAsymmetry(_ sender: NSMenuItem) { onAsymmetryMinutes?(sender.representedObject as? Int ?? 3) }
-    @objc private func editVocabulary(_ sender: Any?) { NSWorkspace.shared.open(Settings.vocabularyURL) }
-    @objc private func chooseRoot(_ sender: Any?) {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
-        panel.directoryURL = Settings.sessionRoot
-        if panel.runModal() == .OK, let url = panel.url { Settings.sessionRoot = url }
-    }
+    @objc private func showRecordings(_ sender: Any?) { onRecordings?() }
+    @objc private func showSettings(_ sender: Any?) { onSettings?() }
 }

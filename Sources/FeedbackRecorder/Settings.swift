@@ -9,8 +9,9 @@ enum Settings {
     /// a bare `swift run` has no bundle and reports 0.0.0.
     static let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
-    private enum Key {
+    enum Key {
         static let sessionRoot = "sessionRoot"
+        static let previousSessionRoots = "previousSessionRoots"
         static let silenceMinutes = "silenceMinutes"
         static let asymmetryMinutes = "asymmetryMinutes"
         static let showLevelMeters = "showLevelMeters"
@@ -18,30 +19,57 @@ enum Settings {
         static let captureSystemAudio = "captureSystemAudio"
         static let locale = "locale"
         static let feedbackAgent = "feedbackAgent"
+        static let copyCommandOnStop = "copyCommandOnStop"
         static let whisperExecutable = "whisperExecutable"
         static let whisperModel = "whisperModel"
         static let hotkeyKeyCode = "hotkeyKeyCode"
         static let hotkeyModifiers = "hotkeyModifiers"
+        static let hotkeyDisplayKey = "hotkeyDisplayKey"
     }
 
     static func registerDefaults() {
         defaults.register(defaults: [
-            Key.sessionRoot: NSHomeDirectory() + "/FeedbackSessions",
+            Key.sessionRoot: defaultSessionRoot.path,
             Key.silenceMinutes: 10,
             Key.asymmetryMinutes: 3,
             Key.showLevelMeters: true,
             Key.captureSystemAudio: true,
             Key.locale: "en-US",
             Key.feedbackAgent: FeedbackAgent.claudeCode.rawValue,
+            Key.copyCommandOnStop: true,
             Key.hotkeyKeyCode: Int(kVK_ANSI_R),
             Key.hotkeyModifiers: Int(controlKey | optionKey | cmdKey),
         ])
     }
 
+    static var defaultSessionRoot: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("FeedbackSessions", isDirectory: true) }
+
     static var sessionRoot: URL {
-        get { URL(fileURLWithPath: defaults.string(forKey: Key.sessionRoot)!, isDirectory: true) }
-        set { defaults.set(newValue.path, forKey: Key.sessionRoot) }
+        get { URL(fileURLWithPath: defaults.string(forKey: Key.sessionRoot) ?? defaultSessionRoot.path, isDirectory: true) }
+        set {
+            let old = sessionRoot.path
+            var previous = defaults.stringArray(forKey: Key.previousSessionRoots) ?? []
+            if old != newValue.path, !previous.contains(old) { previous.append(old) }
+            defaults.set(previous, forKey: Key.previousSessionRoots)
+            defaults.set(newValue.path, forKey: Key.sessionRoot)
+        }
     }
+    static var recordingRoots: [URL] {
+        let paths = (defaults.stringArray(forKey: Key.previousSessionRoots) ?? []) + [defaultSessionRoot.path, sessionRoot.path]
+        return Array(Set(paths)).sorted().map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
+    static var hotkeyDisplayKey: String? { defaults.string(forKey: Key.hotkeyDisplayKey) }
+    static func saveShortcut(_ shortcut: RecordingShortcut, displayKey: String?) {
+        defaults.set(Int(shortcut.keyCode), forKey: Key.hotkeyKeyCode)
+        defaults.set(Int(shortcut.modifiers), forKey: Key.hotkeyModifiers)
+        defaults.set(displayKey, forKey: Key.hotkeyDisplayKey)
+    }
+
+    static var copyCommandOnStop: Bool {
+        defaults.bool(forKey: Key.copyCommandOnStop)
+    }
+
     static var feedbackAgent: FeedbackAgent {
         get { FeedbackAgent(rawValue: defaults.string(forKey: Key.feedbackAgent) ?? "") ?? .claudeCode }
         set { defaults.set(newValue.rawValue, forKey: Key.feedbackAgent) }
