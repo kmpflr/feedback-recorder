@@ -66,7 +66,7 @@ For a project-scoped installation, supply a destination:
 scripts/install-skill.sh codex --dest /path/to/project/.agents/skills/feedback
 ```
 
-See the [synthetic walkthrough](docs/demo.md), which can be tried without recording or sharing real conversations. Codex installation follows the [official skills documentation](https://learn.chatgpt.com/docs/build-skills).
+To try the skill without recording or sharing real conversations, invoke it on the synthetic fixture at `skill/tests/fixtures/session` (for example `/feedback /absolute/path/to/checkout/skill/tests/fixtures/session`). Codex installation follows the [official skills documentation](https://learn.chatgpt.com/docs/build-skills).
 
 ## Understand the menu bar
 
